@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, random_split
 
 script_dir = Path(__file__).resolve().parent
 model_path = script_dir / "cifar_10_model.pth"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class CNN(nn.Module):
@@ -47,6 +48,7 @@ class CNN(nn.Module):
         for epoch in range(epochs):
             epoch_loss = 0
             for batch_X, batch_y in train_loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 outputs = self(batch_X)
                 loss = loss_fn(outputs, batch_y)
 
@@ -79,6 +81,7 @@ class CNN(nn.Module):
         total_loss = 0
         with torch.no_grad():
             for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 outputs = self(batch_X)
                 loss = loss_fn(outputs, batch_y)
                 total_loss += loss.item() * batch_X.size(0)
@@ -89,6 +92,7 @@ class CNN(nn.Module):
         self.eval()
         with torch.no_grad():
             for batch_X, _ in test_loader:
+                batch_X = batch_X.to(device)
                 outputs = self(batch_X)
                 preds = torch.argmax(outputs, dim=1)
                 all_predictions.append(preds)
@@ -120,10 +124,10 @@ def _load_cifar_testing_data(batch_size=128):
     test_loader = DataLoader(cifar_test, batch_size=batch_size, shuffle=False)
     return test_loader
 
-def _visualize(model, test_loader, num_samples=16):
+def _visualize(model, test_loader, model_exists, num_samples=16):
     save_dir = Path(__file__).parent
 
-    if not model_path.exists():
+    if not model_exists:
         plt.figure(figsize=(8, 5))
         plt.plot(range(len(model.loss_history)), model.loss_history, marker='o')
         plt.title("Training Loss Curve")
@@ -136,8 +140,8 @@ def _visualize(model, test_loader, num_samples=16):
     #sample predictions
     model.eval()
     X_sample, y_sample = next(iter(test_loader))  # get first batch
-    X_sample = X_sample[:num_samples]
-    y_sample = y_sample[:num_samples]
+    X_sample = X_sample[:num_samples].to(device)
+    y_sample = y_sample[:num_samples].to(device)
     with torch.no_grad():
         outputs = model(X_sample)
         preds = torch.argmax(outputs, dim=1)
@@ -164,9 +168,11 @@ def _visualize(model, test_loader, num_samples=16):
 
 
 def main():
-    model = CNN()
-    if model_path.exists():
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    print(f"Using device: {device}")
+    model = CNN().to(device)
+    model_exists = model_path.exists()
+    if model_exists:
+        model.load_state_dict(torch.load(model_path, map_location=device))
     else:
         start_time = time.time()
         torch.manual_seed(20)
@@ -178,11 +184,11 @@ def main():
     test_loader = _load_cifar_testing_data()
     predictions = model.predict(test_loader)
 
-    y_test = torch.cat([batch_y for _, batch_y in _load_cifar_testing_data()])
+    y_test = torch.cat([batch_y for _, batch_y in _load_cifar_testing_data()]).to(device)
     accuracy = (predictions == y_test).float().mean()
     print(f"Test Accuracy: {accuracy * 100:.2f}%")
 
-    _visualize(model, test_loader)
+    _visualize(model, test_loader, model_exists)
 
 if __name__ == '__main__':
     main()
