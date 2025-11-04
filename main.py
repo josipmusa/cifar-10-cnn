@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from torch import nn, optim
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
 
@@ -13,24 +14,45 @@ script_dir = Path(__file__).resolve().parent
 model_path = script_dir / "cifar_10_model.pth"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+mean = (0.4914, 0.4822, 0.4465)
+std = (0.2470, 0.2435, 0.2616)
+
+# Standard CIFAR-10 normalization + augmentation
+transform_train = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=mean,std=std)
+])
+
+transform_test = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(mean=mean, std=std)
+])
+
 
 class CNN(nn.Module):
     def __init__(self, num_filters=32, kernel_size=3):
         super(CNN, self).__init__()
         self.conv1 = nn.Conv2d(3, num_filters, kernel_size=kernel_size, padding=1)
         self.conv2 = nn.Conv2d(num_filters, num_filters * 2, kernel_size=kernel_size, padding=1)
+        self.conv3 = nn.Conv2d(num_filters * 2, num_filters * 4, kernel_size=kernel_size, padding=1)
+        self.conv4 = nn.Conv2d(num_filters * 4, num_filters * 4, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.flatten = nn.Flatten()
-        self.dropout = nn.Dropout(p=0.3)
+        self.dropout = nn.Dropout(p=0.5)
         fc1_neuron_num = 256
         self.fc1 = nn.LazyLinear(fc1_neuron_num)
         self.fc2 = nn.Linear(fc1_neuron_num, 10)
-        self.patience = 5
+        self.patience = 10
         self.loss_history = []
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
+        x = self.pool(x)
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
         x = self.pool(x)
         x = self.flatten(x)
         x = F.relu(self.fc1(x))
@@ -38,10 +60,11 @@ class CNN(nn.Module):
         x = self.fc2(x)
         return x
 
-    def fit(self, train_loader, val_loader, epochs=10, lr=0.001):
+    def fit(self, train_loader, val_loader, epochs=50, lr=0.0005):
         best_val_loss = float('inf')
         trigger_times = 0
-        optimizer = optim.Adam(self.parameters(), lr=lr)
+        optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=1e-4) # weight decay penalizes high focus on a single feature (better generalization)
+        scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=3) # scheduler that will lower learning_rate if validation loss stops decreasing
         loss_fn = nn.CrossEntropyLoss()
 
         self.train()
@@ -58,6 +81,7 @@ class CNN(nn.Module):
 
                 epoch_loss += loss.item() * batch_X.size(0)
             val_loss = self._compute_validation_loss(val_loader, loss_fn)
+            scheduler.step(val_loss)
             self.train()
 
             if val_loss < best_val_loss:
@@ -100,18 +124,12 @@ class CNN(nn.Module):
         return predictions
 
 
-# Standard CIFAR-10 normalization
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize(mean=(0.4914, 0.4822, 0.4465),
-                         std=(0.2470, 0.2435, 0.2616))
-])
-
 def _load_cifar_training_data(batch_size=128):
-    cifar_train = datasets.CIFAR10(root='data', train=True, download=True, transform=transform)
+    cifar_train = datasets.CIFAR10(root='data', train=True, download=True, transform=transform_train)
     val_size = int(0.1 * (len(cifar_train)))
     train_size = len(cifar_train) - val_size
     train_dataset, val_dataset = random_split(cifar_train, [train_size, val_size])
+    val_dataset.dataset.transform = transform_test
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -120,7 +138,7 @@ def _load_cifar_training_data(batch_size=128):
 
 
 def _load_cifar_testing_data(batch_size=128):
-    cifar_test = datasets.CIFAR10(root='data', train=False, download=True, transform=transform)
+    cifar_test = datasets.CIFAR10(root='data', train=False, download=True, transform=transform_test)
     test_loader = DataLoader(cifar_test, batch_size=batch_size, shuffle=False)
     return test_loader
 
